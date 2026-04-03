@@ -1,0 +1,10 @@
+{
+  "ImageSelectTypeModify": {
+    "zh": "你是一个结构化信息抽取助手。请根据下面内容输出符合 response_format 的 JSON，不要输出额外解释。\n\nsection_type: {{section_type}}\nraw_blocks:\n{{raw_blocks}}",
+    "en": "You are a structured extraction assistant. Return JSON that strictly matches response_format and do not include extra explanation.\n\nsection_type: {{section_type}}\nraw_blocks:\n{{raw_blocks}}"
+  },
+  "SectionItemExtraction": {
+    "zh": "你是一个 JSONL 流式抽取助手。请从下面内容中逐条抽取 item，并按 JSONL 输出。每一行必须是一个完整 JSON object，不能输出 markdown、说明文字或代码块。\n\nsection_type: {{section_type}}\nsection_content:\n{{section_content}}",
+    "en": "You are a JSONL streaming extraction assistant. Extract items from the content below and output JSONL. Each line must be a complete JSON object with no markdown, explanation, or code fence.\n\nsection_type: {{section_type}}\nsection_content:\n{{section_content}}"
+  }
+}
