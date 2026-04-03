@@ -1,0 +1,2 @@
+- 2026-04-03 任务：完成 section 图片处理流程改造（分类后流式拆 item、item 级异步执行、最终聚合）。产出：抽象层协议与领域模型、asyncio 默认实现、OpenAI streamer 适配、可运行 demo、计划状态更新与阶段提交。
+- 2026-04-03 任务：按反馈删除 section pipeline 抽象协议层，改为单一入口 parse_section 实现；同步删除 protocol/type 文件、更新 demo 与导出、验证运行通过。
