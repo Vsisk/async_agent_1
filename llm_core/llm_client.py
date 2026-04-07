@@ -36,6 +36,7 @@ class OpenAILLMClient:
             "response_format",
             "stream",
             "strict",
+            "image_base64",
         }
     )
 
@@ -92,6 +93,7 @@ class OpenAILLMClient:
         max_tokens: int | None = None,
         timeout: float | None = None,
         strict: bool = True,
+        image_base64: str | None = None,
         **kwargs: Any,
     ) -> Awaitable[LLMFinalResponse]: ...
 
@@ -108,6 +110,7 @@ class OpenAILLMClient:
         max_tokens: int | None = None,
         timeout: float | None = None,
         strict: bool = True,
+        image_base64: str | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamJsonlObject]: ...
 
@@ -123,6 +126,7 @@ class OpenAILLMClient:
         max_tokens: int | None = None,
         timeout: float | None = None,
         strict: bool = True,
+        image_base64: str | None = None,
         **kwargs: Any,
     ) -> Awaitable[LLMFinalResponse] | AsyncIterator[StreamJsonlObject]:
         request_arguments = {
@@ -135,6 +139,7 @@ class OpenAILLMClient:
             "max_tokens": max_tokens,
             "timeout": timeout,
             "strict": strict,
+            "image_base64": image_base64,
             **kwargs,
         }
         _, prompt_variables = self.split_request_arguments(request_arguments)
@@ -150,6 +155,7 @@ class OpenAILLMClient:
                 strict=strict,
                 response_format=response_format,
                 prompt_variables=prompt_variables,
+                image_base64=image_base64,
             )
 
         return self._generate_final(
@@ -162,6 +168,7 @@ class OpenAILLMClient:
             strict=strict,
             response_format=response_format,
             prompt_variables=prompt_variables,
+            image_base64=image_base64,
         )
 
     async def _generate_final(
@@ -176,6 +183,7 @@ class OpenAILLMClient:
         strict: bool,
         response_format: dict[str, Any] | None,
         prompt_variables: Mapping[str, Any],
+        image_base64: str | None,
     ) -> LLMFinalResponse:
         prompt_text = self._render_prompt(
             prompt_template=prompt_template,
@@ -183,7 +191,7 @@ class OpenAILLMClient:
             strict=strict,
             prompt_variables=prompt_variables,
         )
-        messages = self._build_messages(prompt_text)
+        messages = self._build_messages(prompt_text, image_base64=image_base64)
         payload = self._build_chat_payload(
             model=model,
             temperature=temperature,
@@ -230,6 +238,7 @@ class OpenAILLMClient:
         strict: bool,
         response_format: dict[str, Any] | None,
         prompt_variables: Mapping[str, Any],
+        image_base64: str | None,
     ) -> AsyncIterator[StreamJsonlObject]:
         prompt_text = self._render_prompt(
             prompt_template=prompt_template,
@@ -237,7 +246,7 @@ class OpenAILLMClient:
             strict=strict,
             prompt_variables=prompt_variables,
         )
-        messages = self._build_messages(prompt_text)
+        messages = self._build_messages(prompt_text, image_base64=image_base64)
         payload = self._build_chat_payload(
             model=model,
             temperature=temperature,
@@ -292,7 +301,25 @@ class OpenAILLMClient:
         ).prompt_text
 
     @staticmethod
-    def _build_messages(prompt_text: str) -> list[dict[str, str]]:
+    def _build_messages(
+        prompt_text: str,
+        *,
+        image_base64: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if image_base64:
+            image_url = image_base64
+            if not image_base64.startswith("data:"):
+                image_url = f"data:image/png;base64,{image_base64}"
+            return [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                }
+            ]
+
         return [{"role": "user", "content": prompt_text}]
 
     def _build_chat_payload(
@@ -303,7 +330,7 @@ class OpenAILLMClient:
         max_tokens: int | None,
         timeout: float | None,
         response_format: dict[str, Any] | None,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         stream: bool,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
