@@ -37,6 +37,8 @@ class SectionRuntime:
     image_base64: str
     upstream_metadata: dict[str, Any] = field(default_factory=dict)
     classification_result: dict[str, Any] = field(default_factory=dict)
+    table_columns: list["SectionItem"] = field(default_factory=list)
+    processed_table_columns: list["ItemProcessResult"] = field(default_factory=list)
     section_bbox: tuple[float, float, float, float] | None = None
     page_no: int | None = None
 
@@ -419,6 +421,19 @@ def _result_to_processed_item(result: ItemProcessResult) -> ProcessedItem:
     )
 
 
+def _sync_table_columns(
+    runtime: SectionRuntime,
+    item_results: list[ItemProcessResult],
+) -> None:
+    col_results = [
+        result
+        for result in item_results
+        if result.item.item_kind == "col" and result.status == "success"
+    ]
+    runtime.processed_table_columns = list(col_results)
+    runtime.table_columns = [result.item for result in col_results]
+
+
 def _default_kv_handler(item: SectionItem, runtime: SectionRuntime) -> ItemProcessingOutput:
     payload = item.payload
     if not isinstance(payload, KeyValuePayload):
@@ -631,9 +646,17 @@ async def parse_section(
     runtime.classification_result["section_type"] = section_type
 
     halted = False
+    first_row_seen = False
     async for chunk in item_streamer(section, image_base64, section_type):
         for item in parser.feed(chunk):
             _validate_item_for_section(section_type, item)
+            if (
+                section_type == "table"
+                and item.item_kind == "row"
+                and not first_row_seen
+            ):
+                _sync_table_columns(runtime, await scheduler.wait_all())
+                first_row_seen = True
             try:
                 scheduler.add_item_task(item, runtime, processor)
             except SchedulerHaltedError:
@@ -645,12 +668,21 @@ async def parse_section(
     if not halted:
         for item in parser.flush():
             _validate_item_for_section(section_type, item)
+            if (
+                section_type == "table"
+                and item.item_kind == "row"
+                and not first_row_seen
+            ):
+                _sync_table_columns(runtime, await scheduler.wait_all())
+                first_row_seen = True
             try:
                 scheduler.add_item_task(item, runtime, processor)
             except SchedulerHaltedError:
                 break
 
     item_results = await scheduler.wait_all()
+    if section_type == "table":
+        _sync_table_columns(runtime, item_results)
     if fail_fast and scheduler.has_failures:
         raise SectionPipelineExecutionError(
             "Section pipeline failed in fail_fast mode due to item processing failure."
