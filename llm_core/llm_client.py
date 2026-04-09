@@ -463,6 +463,10 @@ class OpenAILLMClient:
         normalized_text = raw_text.strip()
         if not normalized_text.startswith("```"):
             return normalized_text
+        if normalized_text.endswith("```"):
+            inline_content = OpenAILLMClient._strip_inline_code_fence(normalized_text)
+            if inline_content is not None:
+                return inline_content
 
         lines = normalized_text.splitlines()
         if not lines:
@@ -476,3 +480,18 @@ class OpenAILLMClient:
             lines = lines[:-1]
 
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _strip_inline_code_fence(candidate: str) -> str | None:
+        if not candidate.startswith("```") or not candidate.endswith("```"):
+            return None
+
+        inner_content = candidate[3:-3].strip()
+        if not inner_content:
+            return ""
+
+        lowered = inner_content.lower()
+        if lowered.startswith("json"):
+            inner_content = inner_content[4:].strip()
+
+        return inner_content.strip()

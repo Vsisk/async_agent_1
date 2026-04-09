@@ -11,7 +11,6 @@ class IncrementalJsonlParser:
 
     def __init__(self) -> None:
         self._buffer = ""
-        self._inside_code_fence = False
 
     @property
     def buffer(self) -> str:
@@ -34,25 +33,24 @@ class IncrementalJsonlParser:
 
             raw_line = self._buffer[:newline_index]
             self._buffer = self._buffer[newline_index + 1 :]
-            event = self._parse_line(raw_line)
-            if event is not None:
-                events.append(event)
+            events.extend(self._parse_line(raw_line))
 
         if include_tail and self._buffer.strip():
             raw_line = self._buffer
             self._buffer = ""
-            event = self._parse_line(raw_line)
-            if event is not None:
-                events.append(event)
+            events.extend(self._parse_line(raw_line))
 
         return events
 
-    def _parse_line(self, raw_line: str) -> JsonlParseEvent | None:
+    def _parse_line(self, raw_line: str) -> list[JsonlParseEvent]:
         candidate = raw_line.strip()
         if not candidate:
-            return None
+            return []
         if self._is_code_fence_line(candidate):
-            return None
+            return []
+        candidate = self._sanitize_candidate(candidate)
+        if not candidate:
+            return []
 
         try:
             parsed = json.loads(candidate)
@@ -66,9 +64,42 @@ class IncrementalJsonlParser:
                 "Each JSONL line must decode to a JSON object or array."
             )
 
-        return JsonlParseEvent(parsed=parsed, raw_line=candidate)
+        return self._expand_jsonl_payload(parsed, raw_line=candidate)
 
     @staticmethod
     def _is_code_fence_line(candidate: str) -> bool:
         normalized = candidate.lower()
-        return normalized == "```" or normalized.startswith("```json")
+        return normalized == "```" or normalized == "```json"
+
+    @staticmethod
+    def _sanitize_candidate(candidate: str) -> str:
+        if not candidate.startswith("```") or not candidate.endswith("```"):
+            return candidate
+
+        inner_content = candidate[3:-3].strip()
+        if not inner_content:
+            return ""
+
+        lowered = inner_content.lower()
+        if lowered.startswith("json"):
+            inner_content = inner_content[4:].strip()
+
+        return inner_content.strip()
+
+    @staticmethod
+    def _expand_jsonl_payload(
+        parsed: dict | list,
+        *,
+        raw_line: str,
+    ) -> list[JsonlParseEvent]:
+        if isinstance(parsed, dict):
+            return [JsonlParseEvent(parsed=parsed, raw_line=raw_line)]
+
+        events: list[JsonlParseEvent] = []
+        for item in parsed:
+            if not isinstance(item, (dict, list)):
+                raise JsonlStreamParseError(
+                    "When a JSONL line is a JSON array, each element must be a JSON object or array."
+                )
+            events.append(JsonlParseEvent(parsed=item, raw_line=raw_line))
+        return events
