@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from llm_core.exceptions import JsonlStreamParseError
 from llm_core.types import JsonlParseEvent
+
+logger = logging.getLogger(__name__)
 
 
 class IncrementalJsonlParser:
@@ -17,10 +20,12 @@ class IncrementalJsonlParser:
         return self._buffer
 
     def feed(self, chunk: str) -> list[JsonlParseEvent]:
+        logger.debug("Feeding JSONL chunk: chunk_length=%s", len(chunk))
         self._buffer += chunk
         return self._drain_lines(include_tail=False)
 
     def flush(self) -> list[JsonlParseEvent]:
+        logger.debug("Flushing JSONL parser: buffer_length=%s", len(self._buffer))
         return self._drain_lines(include_tail=True)
 
     def _drain_lines(self, *, include_tail: bool) -> list[JsonlParseEvent]:
@@ -47,14 +52,17 @@ class IncrementalJsonlParser:
         if not candidate:
             return []
         if self._is_code_fence_line(candidate):
+            logger.debug("Skipping JSONL code fence line: line=%s", candidate)
             return []
         candidate = self._sanitize_candidate(candidate)
         if not candidate:
             return []
+        logger.debug("Parsing JSONL line: line=%s", candidate)
 
         try:
             parsed = json.loads(candidate)
         except json.JSONDecodeError as exc:
+            logger.exception("Failed to decode JSONL line: line=%s", candidate)
             raise JsonlStreamParseError(
                 f"Failed to decode JSONL line: {exc.msg} (line={candidate!r})"
             ) from exc
@@ -84,7 +92,13 @@ class IncrementalJsonlParser:
         if lowered.startswith("json"):
             inner_content = inner_content[4:].strip()
 
-        return inner_content.strip()
+        sanitized = inner_content.strip()
+        logger.debug(
+            "Sanitized inline fenced JSONL candidate: before=%s after=%s",
+            candidate,
+            sanitized,
+        )
+        return sanitized
 
     @staticmethod
     def _expand_jsonl_payload(
@@ -93,6 +107,7 @@ class IncrementalJsonlParser:
         raw_line: str,
     ) -> list[JsonlParseEvent]:
         if isinstance(parsed, dict):
+            logger.debug("Expanded JSONL payload into 1 event")
             return [JsonlParseEvent(parsed=parsed, raw_line=raw_line)]
 
         events: list[JsonlParseEvent] = []
@@ -102,4 +117,5 @@ class IncrementalJsonlParser:
                     "When a JSONL line is a JSON array, each element must be a JSON object or array."
                 )
             events.append(JsonlParseEvent(parsed=item, raw_line=raw_line))
+        logger.info("Expanded JSONL array payload: source_line=%s event_count=%s", raw_line, len(events))
         return events

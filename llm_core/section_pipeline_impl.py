@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from llm_core.jsonl_parser import IncrementalJsonlParser
 from llm_core.llm_client import OpenAILLMClient
+
+logger = logging.getLogger(__name__)
 
 ItemProcessStatus = Literal["success", "failed", "cancelled"]
 SectionType = Literal["key_value", "plain_text", "table"]
@@ -189,6 +192,7 @@ def _ensure_section_shell_defaults(
 ) -> None:
     if not section.node_id:
         section.node_id = str(upstream_metadata.get("section_node_id") or "section")
+        logger.debug("Applied default section node_id: node_id=%s", section.node_id)
 
 
 def _get_pdf_name(runtime: SectionRuntime) -> str:
@@ -209,14 +213,21 @@ class JsonlIncrementalItemParser:
     def __post_init__(self) -> None:
         self._delegate = IncrementalJsonlParser()
         self._auto_order = 0
+        logger.debug("Initialized JsonlIncrementalItemParser: item_id_prefix=%s", self.item_id_prefix)
 
     def feed(self, chunk: str) -> list[SectionItem]:
+        logger.debug("Parsing section items from chunk: chunk_length=%s", len(chunk))
         events = self._delegate.feed(chunk)
-        return [self._to_item(event.parsed) for event in events]
+        items = [self._to_item(event.parsed) for event in events]
+        logger.debug("Parsed section items from chunk: item_count=%s", len(items))
+        return items
 
     def flush(self) -> list[SectionItem]:
+        logger.debug("Flushing section item parser")
         events = self._delegate.flush()
-        return [self._to_item(event.parsed) for event in events]
+        items = [self._to_item(event.parsed) for event in events]
+        logger.debug("Flushed section item parser: item_count=%s", len(items))
+        return items
 
     def _to_item(self, payload: dict[str, Any] | list[Any]) -> SectionItem:
         if not isinstance(payload, dict):
@@ -257,7 +268,7 @@ class JsonlIncrementalItemParser:
         }
 
         self._auto_order = max(self._auto_order + 1, order + 1)
-        return SectionItem(
+        item = SectionItem(
             item_id=item_id,
             item_kind=item_kind,
             payload=item_payload,
@@ -265,6 +276,14 @@ class JsonlIncrementalItemParser:
             order=order,
             metadata=metadata,
         )
+        logger.info(
+            "Built SectionItem: item_id=%s item_kind=%s order=%s metadata_keys=%s",
+            item.item_id,
+            item.item_kind,
+            item.order,
+            sorted(item.metadata.keys()),
+        )
+        return item
 
     def _build_payload(self, item_kind: ItemKind, payload: dict[str, Any]) -> ItemPayload:
         if item_kind in {"kv", "col"}:
@@ -299,6 +318,12 @@ class DefaultItemProcessor:
         item: SectionItem,
         runtime: SectionRuntime,
     ) -> ItemProcessResult:
+        logger.info(
+            "Processing item: section_id=%s item_id=%s item_kind=%s",
+            runtime.section.node_id,
+            item.item_id,
+            item.item_kind,
+        )
         try:
             if item.item_kind == "kv":
                 output = await _maybe_await(self.process_kv_item(item, runtime))
@@ -309,8 +334,22 @@ class DefaultItemProcessor:
             else:
                 output = await _maybe_await(self.process_row_item(item, runtime))
 
+            logger.info(
+                "Processed item successfully: section_id=%s item_id=%s item_kind=%s logic_nodes=%s references=%s",
+                runtime.section.node_id,
+                item.item_id,
+                item.item_kind,
+                len(output.logic_data_nodes),
+                len(output.reference_list),
+            )
             return ItemProcessResult(item=item, output=output, status="success")
         except Exception as exc:
+            logger.exception(
+                "Processing item failed: section_id=%s item_id=%s item_kind=%s",
+                runtime.section.node_id,
+                item.item_id,
+                item.item_kind,
+            )
             return ItemProcessResult(
                 item=item,
                 output=None,
@@ -335,6 +374,11 @@ class AsyncioItemTaskScheduler:
         self._results = []
         self._halted = False
         self._had_failure = False
+        logger.info(
+            "Initialized AsyncioItemTaskScheduler: max_concurrency=%s fail_fast=%s",
+            self.max_concurrency,
+            self.fail_fast,
+        )
 
     @property
     def has_failures(self) -> bool:
@@ -349,14 +393,23 @@ class AsyncioItemTaskScheduler:
         if self._halted:
             raise SchedulerHaltedError("Scheduler is halted and no longer accepts tasks.")
 
+        logger.debug(
+            "Scheduling item task: section_id=%s item_id=%s item_kind=%s outstanding_tasks=%s",
+            runtime.section.node_id,
+            item.item_id,
+            item.item_kind,
+            len(self._tasks),
+        )
         task = asyncio.create_task(self._run_one(item, runtime, item_processor))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
     async def wait_all(self) -> list[ItemProcessResult]:
+        logger.info("Waiting for all scheduled item tasks: task_count=%s", len(self._tasks))
         while self._tasks:
             current_tasks = list(self._tasks)
             await asyncio.gather(*current_tasks, return_exceptions=True)
+        logger.info("All scheduled item tasks completed: result_count=%s", len(self._results))
         return list(self._results)
 
     async def _run_one(
@@ -367,8 +420,20 @@ class AsyncioItemTaskScheduler:
     ) -> None:
         try:
             async with self._semaphore:
+                logger.debug(
+                    "Running item task: section_id=%s item_id=%s item_kind=%s",
+                    runtime.section.node_id,
+                    item.item_id,
+                    item.item_kind,
+                )
                 result = await item_processor.process_item(item, runtime)
         except asyncio.CancelledError:
+            logger.warning(
+                "Item task cancelled: section_id=%s item_id=%s item_kind=%s",
+                runtime.section.node_id,
+                item.item_id,
+                item.item_kind,
+            )
             self._results.append(
                 ItemProcessResult(
                     item=item,
@@ -380,6 +445,12 @@ class AsyncioItemTaskScheduler:
             raise
         except Exception as exc:
             self._had_failure = True
+            logger.exception(
+                "Item task crashed: section_id=%s item_id=%s item_kind=%s",
+                runtime.section.node_id,
+                item.item_id,
+                item.item_kind,
+            )
             self._results.append(
                 ItemProcessResult(
                     item=item,
@@ -395,13 +466,27 @@ class AsyncioItemTaskScheduler:
 
         if result.status != "success":
             self._had_failure = True
+            logger.warning(
+                "Item task finished with non-success status: section_id=%s item_id=%s status=%s",
+                runtime.section.node_id,
+                item.item_id,
+                result.status,
+            )
             if self.fail_fast:
                 self._halted = True
                 self._cancel_all_pending()
 
         self._results.append(result)
+        logger.debug(
+            "Recorded item task result: section_id=%s item_id=%s status=%s total_results=%s",
+            runtime.section.node_id,
+            item.item_id,
+            result.status,
+            len(self._results),
+        )
 
     def _cancel_all_pending(self) -> None:
+        logger.warning("Cancelling all pending item tasks: task_count=%s", len(self._tasks))
         for task in list(self._tasks):
             if not task.done():
                 task.cancel()
@@ -447,6 +532,11 @@ def _sync_table_columns(
         for result in col_results
         if isinstance(result.item.payload, KeyValuePayload)
     ]
+    logger.info(
+        "Synchronized table columns: section_id=%s column_count=%s",
+        runtime.section.node_id,
+        len(runtime.table_columns),
+    )
 
 
 def _default_kv_handler(item: SectionItem, runtime: SectionRuntime) -> ItemProcessingOutput:
@@ -540,6 +630,12 @@ class ParsedSectionAggregator:
         section_type: SectionType,
         item_results: list[ItemProcessResult],
     ) -> ParsedSectionResult:
+        logger.info(
+            "Aggregating parsed section: section_id=%s section_type=%s item_result_count=%s",
+            runtime.section.node_id,
+            section_type,
+            len(item_results),
+        )
         ordered_results = sorted(item_results, key=lambda result: result.item.order)
         success_count = sum(1 for result in ordered_results if result.status == "success")
         failed_count = sum(1 for result in ordered_results if result.status == "failed")
@@ -567,7 +663,7 @@ class ParsedSectionAggregator:
             reference_list=reference_list,
         )
 
-        return ParsedSectionResult(
+        aggregated = ParsedSectionResult(
             section=section,
             logic_data_nodes=logic_data_nodes,
             item_results=ordered_results,
@@ -586,6 +682,17 @@ class ParsedSectionAggregator:
                 "upstream_metadata": runtime.upstream_metadata,
             },
         )
+        logger.info(
+            "Aggregated parsed section completed: section_id=%s total_items=%s success=%s failed=%s cancelled=%s logic_nodes=%s references=%s",
+            runtime.section.node_id,
+            aggregated.stats["total_items"],
+            aggregated.stats["success_count"],
+            aggregated.stats["failed_count"],
+            aggregated.stats["cancelled_count"],
+            len(aggregated.logic_data_nodes),
+            len(aggregated.section.reference_list),
+        )
+        return aggregated
 
 
 @dataclass(slots=True)
@@ -603,6 +710,12 @@ class OpenAISectionItemStreamer:
         section_type: SectionType,
     ) -> AsyncIterator[str]:
         section_content = section.annotation or section.name
+        logger.info(
+            "Starting OpenAI section item stream: section_id=%s section_type=%s model=%s",
+            section.node_id,
+            section_type,
+            self.model,
+        )
         stream = self.llm_client.generate_result_by_llm(
             prompt_template=self.prompt_template,
             stream=True,
@@ -614,7 +727,18 @@ class OpenAISectionItemStreamer:
             image_base64=image_base64,
         )
         async for event in stream:
+            logger.debug(
+                "Forwarding streamed section item: section_id=%s index=%s raw_line=%s",
+                section.node_id,
+                event.index,
+                event.raw_line,
+            )
             yield json.dumps(event.object, ensure_ascii=False) + "\n"
+        logger.info(
+            "Completed OpenAI section item stream: section_id=%s section_type=%s",
+            section.node_id,
+            section_type,
+        )
 
 
 async def parse_section(
@@ -635,6 +759,13 @@ async def parse_section(
     process_col_item: ColItemHandlerFn | None = None,
     process_row_item: RowItemHandlerFn | None = None,
 ) -> ParsedSectionResult:
+    logger.info(
+        "Starting parse_section: section_id=%s fail_fast=%s max_concurrency=%s page_no=%s",
+        section.node_id or upstream_metadata.get("section_node_id") if upstream_metadata else section.node_id,
+        fail_fast,
+        max_concurrency,
+        page_no,
+    )
     parser = item_parser or JsonlIncrementalItemParser()
     normalized_upstream_metadata = dict(upstream_metadata or {})
     _ensure_section_shell_defaults(section, normalized_upstream_metadata)
@@ -660,10 +791,20 @@ async def parse_section(
     section_type = _normalize_section_type(await _maybe_await(classifier(section, image_base64)))
     runtime.section.type = section_type
     runtime.classification_result["section_type"] = section_type
+    logger.info(
+        "Section classified: section_id=%s section_type=%s",
+        runtime.section.node_id,
+        section_type,
+    )
 
     halted = False
     first_row_seen = False
     async for chunk in item_streamer(section, image_base64, section_type):
+        logger.debug(
+            "Received item stream chunk: section_id=%s chunk_length=%s",
+            runtime.section.node_id,
+            len(chunk),
+        )
         for item in parser.feed(chunk):
             _validate_item_for_section(section_type, item)
             if (
@@ -676,6 +817,11 @@ async def parse_section(
             try:
                 scheduler.add_item_task(item, runtime, processor)
             except SchedulerHaltedError:
+                logger.warning(
+                    "Scheduler halted while streaming items: section_id=%s item_id=%s",
+                    runtime.section.node_id,
+                    item.item_id,
+                )
                 halted = True
                 break
         if halted:
@@ -694,14 +840,27 @@ async def parse_section(
             try:
                 scheduler.add_item_task(item, runtime, processor)
             except SchedulerHaltedError:
+                logger.warning(
+                    "Scheduler halted while flushing items: section_id=%s item_id=%s",
+                    runtime.section.node_id,
+                    item.item_id,
+                )
                 break
 
     item_results = await scheduler.wait_all()
     if section_type == "table":
         _sync_table_columns(runtime, item_results)
     if fail_fast and scheduler.has_failures:
+        logger.error("parse_section failed in fail_fast mode: section_id=%s", runtime.section.node_id)
         raise SectionPipelineExecutionError(
             "Section pipeline failed in fail_fast mode due to item processing failure."
         )
 
-    return await final_aggregator.aggregate(runtime, section_type, item_results)
+    aggregated = await final_aggregator.aggregate(runtime, section_type, item_results)
+    logger.info(
+        "Completed parse_section: section_id=%s section_type=%s total_items=%s",
+        runtime.section.node_id,
+        section_type,
+        aggregated.stats["total_items"],
+    )
+    return aggregated

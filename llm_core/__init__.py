@@ -1,3 +1,5 @@
+import logging
+
 from llm_core.exceptions import (
     JsonlStreamParseError,
     LLMEmptyResponseError,
@@ -42,6 +44,13 @@ from llm_core.types import (
     StreamJsonlObject,
 )
 
+
+def configure_llm_core_logging(level: int = logging.INFO) -> None:
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    )
+
 __all__ = [
     "AsyncioItemTaskScheduler",
     "DefaultItemProcessor",
@@ -75,6 +84,7 @@ __all__ = [
     "SectionReference",
     "StreamJsonlObject",
     "TextPayload",
+    "configure_llm_core_logging",
     "extract_template_variables",
     "parse_section",
     "render_template_text",

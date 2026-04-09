@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Mapping
 from pathlib import Path
 from typing import Any, Literal, overload
@@ -20,6 +21,8 @@ from llm_core.exceptions import (
 from llm_core.jsonl_parser import IncrementalJsonlParser
 from llm_core.prompt_manager import PromptManager
 from llm_core.types import LLMFinalResponse, StreamJsonlObject
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAILLMClient:
@@ -193,6 +196,15 @@ class OpenAILLMClient:
         prompt_variables: Mapping[str, Any],
         image_base64: str | None,
     ) -> LLMFinalResponse:
+        logger.info(
+            "Starting final LLM request: templates=%s lang=%s model=%s thinking=%s response_format=%s image=%s",
+            prompt_template,
+            lang,
+            model or self._default_model,
+            enable_thinking,
+            response_format is not None,
+            image_base64 is not None,
+        )
         prompt_text = self._render_prompt(
             prompt_template=prompt_template,
             lang=lang,
@@ -214,20 +226,36 @@ class OpenAILLMClient:
         try:
             response = await self._client.chat.completions.create(**payload)
         except Exception as exc:
+            logger.exception("Final LLM request failed: model=%s", payload["model"])
             raise LLMRequestError(f"OpenAI request failed: {exc}") from exc
 
         raw_text = self._extract_message_text(response)
         if not raw_text.strip():
+            logger.warning("Final LLM response was empty: model=%s", getattr(response, "model", None))
             raise LLMEmptyResponseError("LLM returned an empty response.")
         normalized_text = self._sanitize_json_text(raw_text)
+        logger.debug(
+            "Final LLM response received: model=%s raw_length=%s normalized_length=%s preview=%s",
+            getattr(response, "model", None),
+            len(raw_text),
+            len(normalized_text),
+            self._preview_text(normalized_text),
+        )
 
         try:
             parsed = json.loads(normalized_text)
         except json.JSONDecodeError as exc:
+            logger.exception("Failed to decode final JSON response: preview=%s", self._preview_text(normalized_text))
             raise LLMJsonDecodeError(
                 f"Failed to decode final JSON response: {exc.msg}"
             ) from exc
 
+        logger.info(
+            "Completed final LLM request: model=%s usage=%s parsed_type=%s",
+            getattr(response, "model", None),
+            self._normalize_usage(getattr(response, "usage", None)),
+            type(parsed).__name__,
+        )
         return LLMFinalResponse(
             parsed=parsed,
             raw_text=raw_text,
@@ -251,6 +279,15 @@ class OpenAILLMClient:
         prompt_variables: Mapping[str, Any],
         image_base64: str | None,
     ) -> AsyncIterator[StreamJsonlObject]:
+        logger.info(
+            "Starting streaming LLM request: templates=%s lang=%s model=%s thinking=%s response_format=%s image=%s",
+            prompt_template,
+            lang,
+            model or self._default_model,
+            enable_thinking,
+            response_format is not None,
+            image_base64 is not None,
+        )
         prompt_text = self._render_prompt(
             prompt_template=prompt_template,
             lang=lang,
@@ -274,14 +311,26 @@ class OpenAILLMClient:
         try:
             stream_response = await self._client.chat.completions.create(**payload)
         except Exception as exc:
+            logger.exception("Streaming LLM request failed: model=%s", payload["model"])
             raise LLMRequestError(f"OpenAI stream request failed: {exc}") from exc
 
         async for chunk in stream_response:
             delta_text = self._extract_stream_delta_text(chunk)
             if not delta_text:
                 continue
+            logger.debug(
+                "Received stream delta: model=%s delta_length=%s preview=%s",
+                payload["model"],
+                len(delta_text),
+                self._preview_text(delta_text),
+            )
 
             for event in parser.feed(delta_text):
+                logger.debug(
+                    "Yielding stream JSON object: index=%s raw_line=%s",
+                    index,
+                    self._preview_text(event.raw_line),
+                )
                 yield StreamJsonlObject(
                     object=event.parsed,
                     raw_line=event.raw_line,
@@ -290,12 +339,18 @@ class OpenAILLMClient:
                 index += 1
 
         for event in parser.flush():
+            logger.debug(
+                "Yielding flushed stream JSON object: index=%s raw_line=%s",
+                index,
+                self._preview_text(event.raw_line),
+            )
             yield StreamJsonlObject(
                 object=event.parsed,
                 raw_line=event.raw_line,
                 index=index,
             )
             index += 1
+        logger.info("Completed streaming LLM request: model=%s yielded=%s", payload["model"], index)
 
     def _render_prompt(
         self,
@@ -305,6 +360,13 @@ class OpenAILLMClient:
         strict: bool,
         prompt_variables: Mapping[str, Any],
     ) -> str:
+        logger.debug(
+            "Rendering prompt via PromptManager: templates=%s lang=%s strict=%s variable_keys=%s",
+            prompt_template,
+            lang or self._default_lang,
+            strict,
+            sorted(prompt_variables.keys()),
+        )
         return self._prompt_manager.render(
             prompt_template=prompt_template,
             lang=lang or self._default_lang,
@@ -368,6 +430,16 @@ class OpenAILLMClient:
             payload["timeout"] = timeout
         if response_format is not None:
             payload["response_format"] = response_format
+        logger.debug(
+            "Built chat payload: model=%s stream=%s temperature=%s max_tokens=%s timeout=%s reasoning_effort=%s response_format=%s",
+            payload["model"],
+            stream,
+            payload["temperature"],
+            payload.get("max_tokens"),
+            payload.get("timeout"),
+            payload.get("reasoning_effort"),
+            response_format is not None,
+        )
         return payload
 
     @staticmethod
@@ -479,7 +551,14 @@ class OpenAILLMClient:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
 
-        return "\n".join(lines).strip()
+        sanitized = "\n".join(lines).strip()
+        logger.debug(
+            "Sanitized fenced JSON response: before_length=%s after_length=%s preview=%s",
+            len(raw_text),
+            len(sanitized),
+            OpenAILLMClient._preview_text(sanitized),
+        )
+        return sanitized
 
     @staticmethod
     def _strip_inline_code_fence(candidate: str) -> str | None:
@@ -495,3 +574,10 @@ class OpenAILLMClient:
             inner_content = inner_content[4:].strip()
 
         return inner_content.strip()
+
+    @staticmethod
+    def _preview_text(value: str, max_length: int = 120) -> str:
+        single_line = " ".join(value.split())
+        if len(single_line) <= max_length:
+            return single_line
+        return single_line[: max_length - 3] + "..."

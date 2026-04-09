@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -13,6 +14,7 @@ from llm_core.exceptions import (
 from llm_core.types import PromptCatalog, PromptDefinition, PromptRenderResult
 
 _VARIABLE_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
+logger = logging.getLogger(__name__)
 
 
 def extract_template_variables(template_text: str) -> set[str]:
@@ -27,6 +29,12 @@ def render_template_text(
     strict: bool = True,
 ) -> str:
     """Pure-function template renderer used by PromptManager and unit tests."""
+    logger.debug(
+        "Rendering template text: template_length=%s variable_count=%s strict=%s",
+        len(template_text),
+        len(variables),
+        strict,
+    )
 
     required_variables = extract_template_variables(template_text)
     missing_variables = sorted(
@@ -65,6 +73,7 @@ class PromptManager:
         return self._prompt_file
 
     def get_prompt(self, prompt_name: str, *, lang: str | None = None) -> str:
+        logger.debug("Loading prompt template: prompt_name=%s lang=%s", prompt_name, lang)
         prompt_definition = self._catalog.prompts.get(prompt_name)
         if prompt_definition is None:
             raise PromptNotFoundError(f"Prompt template not found: {prompt_name}")
@@ -84,6 +93,11 @@ class PromptManager:
         )
 
     def build_prompt_text(self, prompt_template: list[str], *, lang: str | None = None) -> str:
+        logger.debug(
+            "Building combined prompt text: templates=%s lang=%s",
+            prompt_template,
+            lang,
+        )
         prompt_parts = [self.get_prompt(prompt_name, lang=lang) for prompt_name in prompt_template]
         return "\n\n".join(prompt_parts)
 
@@ -98,9 +112,21 @@ class PromptManager:
         if not prompt_template:
             raise PromptRenderError("prompt_template must contain at least one template name.")
 
+        logger.info(
+            "Rendering prompt: templates=%s lang=%s strict=%s variable_keys=%s",
+            prompt_template,
+            lang or self._default_lang,
+            strict,
+            sorted((variables or {}).keys()),
+        )
         render_variables = dict(variables or {})
         combined_prompt = self.build_prompt_text(prompt_template, lang=lang)
         prompt_text = render_template_text(combined_prompt, render_variables, strict=strict)
+        logger.debug(
+            "Rendered prompt completed: templates=%s prompt_length=%s",
+            prompt_template,
+            len(prompt_text),
+        )
 
         return PromptRenderResult(
             prompt_text=prompt_text,
@@ -109,6 +135,7 @@ class PromptManager:
         )
 
     def _load_catalog(self) -> PromptCatalog:
+        logger.info("Loading prompt catalog from %s", self._prompt_file)
         try:
             payload = json.loads(self._prompt_file.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
@@ -129,4 +156,5 @@ class PromptManager:
                 )
             prompts[prompt_name] = PromptDefinition.from_mapping(value)
 
+        logger.info("Loaded prompt catalog: prompt_count=%s", len(prompts))
         return PromptCatalog(prompts=prompts)
