@@ -31,6 +31,7 @@ class OpenAILLMClient:
             "lang",
             "model",
             "temperature",
+            "enable_thinking",
             "max_tokens",
             "timeout",
             "response_format",
@@ -90,6 +91,7 @@ class OpenAILLMClient:
         stream: Literal[False] = False,
         model: str | None = None,
         temperature: float | None = None,
+        enable_thinking: bool = False,
         max_tokens: int | None = None,
         timeout: float | None = None,
         strict: bool = True,
@@ -107,6 +109,7 @@ class OpenAILLMClient:
         stream: Literal[True],
         model: str | None = None,
         temperature: float | None = None,
+        enable_thinking: bool = False,
         max_tokens: int | None = None,
         timeout: float | None = None,
         strict: bool = True,
@@ -123,6 +126,7 @@ class OpenAILLMClient:
         stream: bool = False,
         model: str | None = None,
         temperature: float | None = None,
+        enable_thinking: bool = False,
         max_tokens: int | None = None,
         timeout: float | None = None,
         strict: bool = True,
@@ -136,6 +140,7 @@ class OpenAILLMClient:
             "stream": stream,
             "model": model,
             "temperature": temperature,
+            "enable_thinking": enable_thinking,
             "max_tokens": max_tokens,
             "timeout": timeout,
             "strict": strict,
@@ -150,6 +155,7 @@ class OpenAILLMClient:
                 lang=lang,
                 model=model,
                 temperature=temperature,
+                enable_thinking=enable_thinking,
                 max_tokens=max_tokens,
                 timeout=timeout,
                 strict=strict,
@@ -163,6 +169,7 @@ class OpenAILLMClient:
             lang=lang,
             model=model,
             temperature=temperature,
+            enable_thinking=enable_thinking,
             max_tokens=max_tokens,
             timeout=timeout,
             strict=strict,
@@ -178,6 +185,7 @@ class OpenAILLMClient:
         lang: str,
         model: str | None,
         temperature: float | None,
+        enable_thinking: bool,
         max_tokens: int | None,
         timeout: float | None,
         strict: bool,
@@ -195,6 +203,7 @@ class OpenAILLMClient:
         payload = self._build_chat_payload(
             model=model,
             temperature=temperature,
+            enable_thinking=enable_thinking,
             max_tokens=max_tokens,
             timeout=timeout,
             response_format=response_format,
@@ -210,9 +219,10 @@ class OpenAILLMClient:
         raw_text = self._extract_message_text(response)
         if not raw_text.strip():
             raise LLMEmptyResponseError("LLM returned an empty response.")
+        normalized_text = self._sanitize_json_text(raw_text)
 
         try:
-            parsed = json.loads(raw_text)
+            parsed = json.loads(normalized_text)
         except json.JSONDecodeError as exc:
             raise LLMJsonDecodeError(
                 f"Failed to decode final JSON response: {exc.msg}"
@@ -233,6 +243,7 @@ class OpenAILLMClient:
         lang: str,
         model: str | None,
         temperature: float | None,
+        enable_thinking: bool,
         max_tokens: int | None,
         timeout: float | None,
         strict: bool,
@@ -250,6 +261,7 @@ class OpenAILLMClient:
         payload = self._build_chat_payload(
             model=model,
             temperature=temperature,
+            enable_thinking=enable_thinking,
             max_tokens=max_tokens,
             timeout=timeout,
             response_format=response_format,
@@ -327,6 +339,7 @@ class OpenAILLMClient:
         *,
         model: str | None,
         temperature: float | None,
+        enable_thinking: bool,
         max_tokens: int | None,
         timeout: float | None,
         response_format: dict[str, Any] | None,
@@ -342,6 +355,12 @@ class OpenAILLMClient:
             self._default_temperature if temperature is None else temperature
         )
         payload["temperature"] = resolved_temperature
+        reasoning_effort = self._resolve_reasoning_effort(
+            model_name=payload["model"],
+            enable_thinking=enable_thinking,
+        )
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
 
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
@@ -350,6 +369,23 @@ class OpenAILLMClient:
         if response_format is not None:
             payload["response_format"] = response_format
         return payload
+
+    @staticmethod
+    def _resolve_reasoning_effort(
+        *,
+        model_name: str,
+        enable_thinking: bool,
+    ) -> str | None:
+        normalized_name = model_name.lower()
+
+        if normalized_name.startswith("gpt-5.1"):
+            return "medium" if enable_thinking else "none"
+
+        reasoning_model_prefixes = ("gpt-5", "o1", "o3", "o4")
+        if normalized_name.startswith(reasoning_model_prefixes):
+            return "medium" if enable_thinking else None
+
+        return None
 
     @staticmethod
     def _extract_message_text(response: Any) -> str:
@@ -421,3 +457,22 @@ class OpenAILLMClient:
         if hasattr(usage, "__dict__"):
             return dict(vars(usage))
         return None
+
+    @staticmethod
+    def _sanitize_json_text(raw_text: str) -> str:
+        normalized_text = raw_text.strip()
+        if not normalized_text.startswith("```"):
+            return normalized_text
+
+        lines = normalized_text.splitlines()
+        if not lines:
+            return normalized_text
+
+        first_line = lines[0].strip().lower()
+        if first_line == "```" or first_line.startswith("```json"):
+            lines = lines[1:]
+
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        return "\n".join(lines).strip()
