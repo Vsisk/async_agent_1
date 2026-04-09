@@ -11,6 +11,7 @@ class IncrementalJsonlParser:
 
     def __init__(self) -> None:
         self._buffer = ""
+        self._inside_code_fence = False
 
     @property
     def buffer(self) -> str:
@@ -50,6 +51,8 @@ class IncrementalJsonlParser:
         candidate = raw_line.strip()
         if not candidate:
             return None
+        if self._is_code_fence_line(candidate):
+            return None
 
         try:
             parsed = json.loads(candidate)
@@ -64,3 +67,8 @@ class IncrementalJsonlParser:
             )
 
         return JsonlParseEvent(parsed=parsed, raw_line=candidate)
+
+    @staticmethod
+    def _is_code_fence_line(candidate: str) -> bool:
+        normalized = candidate.lower()
+        return normalized == "```" or normalized.startswith("```json")

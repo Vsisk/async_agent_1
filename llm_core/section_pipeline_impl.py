@@ -39,6 +39,7 @@ class SectionRuntime:
     classification_result: dict[str, Any] = field(default_factory=dict)
     table_columns: list["SectionItem"] = field(default_factory=list)
     processed_table_columns: list["ItemProcessResult"] = field(default_factory=list)
+    table_column_context: list[dict[str, str]] = field(default_factory=list)
     section_bbox: tuple[float, float, float, float] | None = None
     page_no: int | None = None
 
@@ -47,6 +48,7 @@ class SectionRuntime:
 class KeyValuePayload:
     key: str
     exp: str
+    annotation: str
     cbs_name: str
 
 
@@ -266,9 +268,13 @@ class JsonlIncrementalItemParser:
 
     def _build_payload(self, item_kind: ItemKind, payload: dict[str, Any]) -> ItemPayload:
         if item_kind in {"kv", "col"}:
+            annotation = _read_required_string(payload, "annotation")
+            if not annotation:
+                annotation = _read_required_string(payload, "exp")
             return KeyValuePayload(
                 key=_read_required_string(payload, "key"),
                 exp=_read_required_string(payload, "exp"),
+                annotation=annotation,
                 cbs_name=_read_required_string(payload, "cbs_name"),
             )
 
@@ -432,6 +438,15 @@ def _sync_table_columns(
     ]
     runtime.processed_table_columns = list(col_results)
     runtime.table_columns = [result.item for result in col_results]
+    runtime.table_column_context = [
+        {
+            "item_id": result.item.item_id,
+            "cbs_name": result.item.payload.cbs_name,
+            "annotation": result.item.payload.annotation,
+        }
+        for result in col_results
+        if isinstance(result.item.payload, KeyValuePayload)
+    ]
 
 
 def _default_kv_handler(item: SectionItem, runtime: SectionRuntime) -> ItemProcessingOutput:
@@ -443,12 +458,12 @@ def _default_kv_handler(item: SectionItem, runtime: SectionRuntime) -> ItemProce
         node_id=_build_logic_node_id(runtime.section.node_id, item.item_id),
         type="field",
         name=payload.cbs_name,
-        annotation=payload.exp,
+        annotation=payload.annotation,
     )
     reference = SectionReference(
         pdf_name=_get_pdf_name(runtime),
         reference_node_id=node.node_id,
-        pdf_exp=payload.exp,
+        pdf_exp=payload.annotation,
         cbs_name=payload.cbs_name,
     )
     return ItemProcessingOutput(logic_data_nodes=[node], reference_list=[reference])
@@ -474,13 +489,13 @@ def _default_col_handler(item: SectionItem, runtime: SectionRuntime) -> ItemProc
         node_id=_build_logic_node_id(runtime.section.node_id, item.item_id),
         type=node_type,
         name=payload.cbs_name,
-        annotation=payload.exp,
+        annotation=payload.annotation,
         data={"pdf_key": payload.key},
     )
     reference = SectionReference(
         pdf_name=_get_pdf_name(runtime),
         reference_node_id=node.node_id,
-        pdf_exp=payload.exp,
+        pdf_exp=payload.annotation,
         cbs_name=payload.cbs_name,
     )
     return ItemProcessingOutput(logic_data_nodes=[node], reference_list=[reference])
@@ -587,7 +602,7 @@ class OpenAISectionItemStreamer:
         image_base64: str,
         section_type: SectionType,
     ) -> AsyncIterator[str]:
-        del section
+        section_content = section.annotation or section.name
         stream = self.llm_client.generate_result_by_llm(
             prompt_template=self.prompt_template,
             stream=True,
@@ -595,6 +610,7 @@ class OpenAISectionItemStreamer:
             temperature=self.temperature,
             lang=self.lang,
             section_type=section_type,
+            section_content=section_content,
             image_base64=image_base64,
         )
         async for event in stream:

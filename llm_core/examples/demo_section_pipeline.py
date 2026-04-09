@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+import os
 from dataclasses import asdict
 
-from llm_core.section_pipeline_impl import SectionShell, parse_section
+from llm_core import OpenAILLMClient, OpenAISectionItemStreamer, SectionShell, parse_section
 
 
 def classify_section(section: SectionShell, image_base64: str) -> str:
@@ -13,69 +13,32 @@ def classify_section(section: SectionShell, image_base64: str) -> str:
     return "table"
 
 
-async def stream_section_items(
-    section: SectionShell,
-    image_base64: str,
-    section_type: str,
-) -> AsyncIterator[str]:
-    print(
-        f"[B] start streaming, node_id={section.node_id!r}, "
-        f"section_type={section_type}, image_size={len(image_base64)}"
-    )
-    lines = [
-        {
-            "item_id": "table-col-1",
-            "item_kind": "col",
-            "key": "总费用",
-            "exp": "金额",
-            "cbs_name": "total_fee",
-            "is_summary": True,
-            "order": 0,
-        },
-        {
-            "item_id": "table-col-2",
-            "item_kind": "col",
-            "key": "药品费",
-            "exp": "金额",
-            "cbs_name": "drug_fee",
-            "is_summary": False,
-            "order": 1,
-        },
-        {
-            "item_id": "table-row-1",
-            "item_kind": "row",
-            "key": "第一行",
-            "annotation": "该行描述费用构成",
-            "column_requirements": {
-                "total_fee": "需要提取整行汇总金额",
-                "drug_fee": "需要提取药品费金额",
-            },
-            "order": 2,
-        },
-    ]
-
-    for line in lines:
-        payload = json.dumps(line, ensure_ascii=False) + "\n"
-        split_at = len(payload) // 2
-        print(f"[B] emit chunk-1 for {line['item_id']}")
-        yield payload[:split_at]
-        await asyncio.sleep(0.08)
-        print(f"[B] emit chunk-2 for {line['item_id']}")
-        yield payload[split_at:]
-        await asyncio.sleep(0.02)
-
-    print("[B] streaming done")
-
-
 async def main() -> None:
-    section = SectionShell()
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY is required to run this demo.")
+
+    section = SectionShell(
+        annotation=(
+            "项目一：总费用 10 元，药品费 8 元\n"
+            "项目二：总费用 20 元，药品费 12 元"
+        )
+    )
     image_base64 = "ZmFrZV9pbWFnZV9iYXNlNjQ="
+
+    llm_client = OpenAILLMClient()
+    item_streamer = OpenAISectionItemStreamer(
+        llm_client=llm_client,
+        prompt_template=["SectionItemExtraction"],
+        model="gpt-4.1",
+        temperature=0,
+        lang="zh",
+    )
 
     result = await parse_section(
         section,
         image_base64,
         classifier=classify_section,
-        item_streamer=stream_section_items,
+        item_streamer=item_streamer.stream_items,
         max_concurrency=2,
         fail_fast=False,
         upstream_metadata={
@@ -85,7 +48,7 @@ async def main() -> None:
         },
     )
 
-    print("[D] parsed section result:")
+    print("[B] parsed section result:")
     print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
 
 
