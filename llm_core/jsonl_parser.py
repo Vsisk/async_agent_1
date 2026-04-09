@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
 
@@ -60,11 +61,11 @@ class IncrementalJsonlParser:
         logger.debug("Parsing JSONL line: line=%s", candidate)
 
         try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError as exc:
+            parsed = self._decode_json_like_line(candidate)
+        except ValueError as exc:
             logger.exception("Failed to decode JSONL line: line=%s", candidate)
             raise JsonlStreamParseError(
-                f"Failed to decode JSONL line: {exc.msg} (line={candidate!r})"
+                f"Failed to decode JSONL line: {exc} (line={candidate!r})"
             ) from exc
 
         if not isinstance(parsed, (dict, list)):
@@ -119,3 +120,33 @@ class IncrementalJsonlParser:
             events.append(JsonlParseEvent(parsed=item, raw_line=raw_line))
         logger.info("Expanded JSONL array payload: source_line=%s event_count=%s", raw_line, len(events))
         return events
+
+    @staticmethod
+    def _decode_json_like_line(candidate: str) -> dict | list:
+        json_error_message = ""
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as json_exc:
+            json_error_message = json_exc.msg
+            logger.debug(
+                "Standard JSONL decode failed, trying literal_eval fallback: line=%s",
+                candidate,
+            )
+        else:
+            if not isinstance(parsed, (dict, list)):
+                raise ValueError("Each JSONL line must decode to a JSON object or array.")
+            return parsed
+
+        try:
+            parsed = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError) as literal_exc:
+            raise ValueError(json_error_message or str(literal_exc)) from literal_exc
+
+        if not isinstance(parsed, (dict, list)):
+            raise ValueError("Each JSONL line must decode to a JSON object or array.")
+
+        logger.info(
+            "Decoded JSONL line with literal_eval fallback: parsed_type=%s",
+            type(parsed).__name__,
+        )
+        return parsed

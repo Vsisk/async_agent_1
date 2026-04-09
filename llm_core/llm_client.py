@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Mapping
@@ -243,11 +244,14 @@ class OpenAILLMClient:
         )
 
         try:
-            parsed = json.loads(normalized_text)
-        except json.JSONDecodeError as exc:
-            logger.exception("Failed to decode final JSON response: preview=%s", self._preview_text(normalized_text))
+            parsed = self._decode_json_like_text(normalized_text)
+        except ValueError as exc:
+            logger.exception(
+                "Failed to decode final JSON response: preview=%s",
+                self._preview_text(normalized_text),
+            )
             raise LLMJsonDecodeError(
-                f"Failed to decode final JSON response: {exc.msg}"
+                f"Failed to decode final JSON response: {exc}"
             ) from exc
 
         logger.info(
@@ -559,6 +563,32 @@ class OpenAILLMClient:
             OpenAILLMClient._preview_text(sanitized),
         )
         return sanitized
+
+    @staticmethod
+    def _decode_json_like_text(text: str) -> dict[str, Any] | list[Any] | Any:
+        json_error_message = ""
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as json_exc:
+            json_error_message = json_exc.msg
+            logger.debug(
+                "Standard JSON decode failed, trying literal_eval fallback: preview=%s",
+                OpenAILLMClient._preview_text(text),
+            )
+
+        try:
+            parsed = ast.literal_eval(text)
+        except (SyntaxError, ValueError) as literal_exc:
+            raise ValueError(json_error_message or str(literal_exc)) from literal_exc
+
+        if not isinstance(parsed, (dict, list)):
+            raise ValueError("Decoded content must be a JSON object or array.")
+
+        logger.info(
+            "Decoded response with literal_eval fallback: parsed_type=%s",
+            type(parsed).__name__,
+        )
+        return parsed
 
     @staticmethod
     def _strip_inline_code_fence(candidate: str) -> str | None:
