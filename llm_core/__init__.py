@@ -1,3 +1,5 @@
+import logging
+
 from llm_core.exceptions import (
     JsonlStreamParseError,
     LLMEmptyResponseError,
@@ -14,26 +16,76 @@ from llm_core.prompt_manager import (
     extract_template_variables,
     render_template_text,
 )
+from llm_core.section_pipeline_impl import (
+    AsyncioItemTaskScheduler,
+    DefaultItemProcessor,
+    ItemProcessingOutput,
+    ItemProcessResult,
+    KeyValuePayload,
+    LogicDataNode,
+    JsonlIncrementalItemParser,
+    OpenAISectionItemStreamer,
+    ParsedSectionAggregator,
+    ParsedSectionResult,
+    ProcessedItem,
+    RowPayload,
+    SectionDraft,
+    SectionReference,
+    SectionShell,
+    SchedulerHaltedError,
+    SectionItem,
+    SectionPipelineExecutionError,
+    TextPayload,
+    parse_section,
+)
 from llm_core.types import (
     LLMFinalResponse,
     PromptRenderResult,
     StreamJsonlObject,
 )
 
+
+def configure_llm_core_logging(level: int = logging.INFO) -> None:
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    )
+
 __all__ = [
+    "AsyncioItemTaskScheduler",
+    "DefaultItemProcessor",
+    "ItemProcessingOutput",
     "IncrementalJsonlParser",
+    "ItemProcessResult",
+    "KeyValuePayload",
+    "JsonlIncrementalItemParser",
     "JsonlStreamParseError",
     "LLMEmptyResponseError",
     "LLMFinalResponse",
     "LLMJsonDecodeError",
     "LLMRequestError",
+    "OpenAISectionItemStreamer",
     "OpenAILLMClient",
     "PromptLanguageNotFoundError",
     "PromptManager",
     "PromptNotFoundError",
     "PromptRenderError",
     "PromptRenderResult",
+    "LogicDataNode",
+    "ParsedSectionAggregator",
+    "ParsedSectionResult",
+    "ProcessedItem",
+    "RowPayload",
+    "SchedulerHaltedError",
+    "SectionDraft",
+    "SectionShell",
+    "SectionItem",
+    "SectionPipelineExecutionError",
+    "SectionReference",
     "StreamJsonlObject",
+    "TextPayload",
+    "configure_llm_core_logging",
     "extract_template_variables",
+    "parse_section",
     "render_template_text",
 ]
