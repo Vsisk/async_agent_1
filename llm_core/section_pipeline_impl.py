@@ -492,12 +492,18 @@ class AsyncioItemTaskScheduler:
                 task.cancel()
 
 
-def _validate_item_for_section(section_type: SectionType, item: SectionItem) -> None:
+def _validate_item_for_section(section_type: SectionType, item: SectionItem) -> bool:
     allowed_kinds = SECTION_ITEM_KINDS[section_type]
     if item.item_kind not in allowed_kinds:
-        raise ValueError(
-            f"item_kind={item.item_kind!r} is not allowed for section_type={section_type!r}."
+        logger.warning(
+            "Skipping item with incompatible kind: section_type=%s item_id=%s item_kind=%s allowed_kinds=%s",
+            section_type,
+            item.item_id,
+            item.item_kind,
+            allowed_kinds,
         )
+        return False
+    return True
 
 
 def _result_to_processed_item(result: ItemProcessResult) -> ProcessedItem:
@@ -806,7 +812,8 @@ async def parse_section(
             len(chunk),
         )
         for item in parser.feed(chunk):
-            _validate_item_for_section(section_type, item)
+            if not _validate_item_for_section(section_type, item):
+                continue
             if (
                 section_type == "table"
                 and item.item_kind == "row"
@@ -829,7 +836,8 @@ async def parse_section(
 
     if not halted:
         for item in parser.flush():
-            _validate_item_for_section(section_type, item)
+            if not _validate_item_for_section(section_type, item):
+                continue
             if (
                 section_type == "table"
                 and item.item_kind == "row"
